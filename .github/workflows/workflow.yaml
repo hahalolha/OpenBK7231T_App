@@ -280,6 +280,15 @@ jobs:
           - platform: OpenLN882H
             variant: btproxy
             gcc: 10.3-2021.10
+
+          # extras for RTL8710B (AmebaZ2)  
+          - platform: OpenRTL8710B  
+            variant: hlw8112  
+            gcc: 8-2019-q3  
+          - platform: OpenRTL87X0C  
+            variant: hlw8112  
+            gcc: apt
+            
     steps:
       - name: Source checkout
         uses: actions/checkout@v5
