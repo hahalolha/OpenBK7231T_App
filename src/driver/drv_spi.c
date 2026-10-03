@@ -17,6 +17,13 @@
 #include "spi_pub.h"
 uint32_t mode = SPI_MASTER;
 #endif
+#if PLATFORM_REALTEK  
+#include "../hal/realtek/hal_pinmap_realtek.h"  
+#include "spi_api.h"  
+#include "spi_ex_api.h"  
+static spi_t obk_spi;  
+static bool obk_spi_initialised = false;  
+#endif
 #include "../logging/logging.h"
 
 
@@ -38,6 +45,8 @@ int SPI_DriverInit(void) {
 	return 0;
 #elif PLATFORM_BEKEN_NEW
 	return 0;
+#elif PLATFORM_REALTEK
+	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_DriverInit not supported");
     return -1;
@@ -52,6 +61,8 @@ int SPI_DriverDeinit(void) {
 	// spi_exit();
 	return 0;
 #elif PLATFORM_BEKEN_NEW
+	return 0;
+#elif PLATFORM_REALTEK
 	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_DriverDeinit not supported");
@@ -116,6 +127,25 @@ int OBK_SPI_Init(const spi_config_t *config) {
 		return bk_spi_master_init(config->baud_rate, ((config->polarity == SPI_POLARITY_LOW ? 0 : SPI_CPOL) | (config->phase == SPI_PHASE_1ST_EDGE ? 0 : SPI_CPHA)));
 	else
 		return bk_spi_slave_init(config->baud_rate, ((config->polarity == SPI_POLARITY_LOW ? 0 : SPI_CPOL) | (config->phase == SPI_PHASE_1ST_EDGE ? 0 : SPI_CPHA)));
+#elif PLATFORM_REALTEK  
+	obk_spi_initialised = false;  
+	PinName mosi = NC, miso = NC, sclk = NC;  
+#if PLATFORM_RTL8710B  
+	// SPI0: mosi PA_4 / miso PA_3 / sclk PA_1  (or SPI1 PA_23/PA_22/PA_18, PB_3/PB_2/PB_1)  
+	obk_spi.spi_idx = MBED_SPI0;  
+	mosi = PA_4; miso = PA_3; sclk = PA_1;  
+#elif PLATFORM_RTL87X0C  
+	// fixed by chip: miso PA_10 / sclk PA_8; mosi PA_4 (or PA_9, PA_19)  
+	miso = PA_10; sclk = PA_8; mosi = PA_4;  
+#endif  
+	if (mosi == NC) return -1;  
+	spi_init(&obk_spi, mosi, miso, sclk, NC);   // ssel=NC: CS driven by HLW8112 driver  
+	uint8_t mode = ((config->polarity == SPI_POLARITY_HIGH) << 1)  
+	             | (config->phase == SPI_PHASE_2ND_EDGE);  
+	spi_format(&obk_spi, config->bit_width == SPI_BIT_WIDTH_16BITS ? 16 : 8, mode, 0);  
+	spi_frequency(&obk_spi, config->baud_rate);  
+	obk_spi_initialised = true;  
+	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_Init not supported");
     return -1;
@@ -143,6 +173,9 @@ int SPI_Deinit(void) {
 		return bk_spi_master_deinit();
 	else
 		return bk_spi_slave_deinit();
+#elif PLATFORM_REALTEK  
+	if (obk_spi_initialised) { spi_free(&obk_spi); obk_spi_initialised = false; }  
+	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_Deinit not supported");
     return -1;
@@ -197,6 +230,10 @@ int SPI_WriteBytes(const void *data, uint32_t size) {
 		return bk_spi_master_xfer(&msg);
 	else
 		return bk_spi_slave_xfer(&msg);
+#elif PLATFORM_REALTEK  
+	if (!obk_spi_initialised) return -1;  
+	spi_master_write_stream(&obk_spi, (char*)data, size);   // write  
+	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_WriteBytes not supported");
     return -1;
@@ -238,6 +275,10 @@ int SPI_ReadBytes(void *data, uint32_t size) {
 		return bk_spi_master_xfer(&msg);
 	else
 		return bk_spi_slave_xfer(&msg);
+#elif PLATFORM_REALTEK  
+	if (!obk_spi_initialised) return -1;  
+	spi_master_read_stream(&obk_spi, (char*)data, size);   // read  
+	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_ReadBytes not supported");
     return -1;
@@ -268,6 +309,17 @@ int SPI_Transmit(const void *txData, uint32_t txSize, void *rxData,
 		return bk_spi_master_xfer(&msg);
 	else
 		return bk_spi_slave_xfer(&msg);
+#elif PLATFORM_REALTEK  
+	
+	int err = 0;
+
+    if (txSize && txData)
+		err |= SPI_WriteBytes(txData, txSize);
+
+    if (rxSize && rxData)
+		err |= SPI_ReadBytes(rxData, rxSize);
+
+	return err;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_Transmit not supported");
     return -1;
