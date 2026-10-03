@@ -17,6 +17,14 @@
 #include "spi_pub.h"
 uint32_t mode = SPI_MASTER;
 #endif
+#if PLATFORM_REALTEK  
+#include "../hal/realtek/hal_pinmap_realtek.h"   // for g_pins / PinName  
+#include "../hal/hal_pins.h"  
+#include "drv_soft_spi.h"  
+static softSPI_t obk_softspi;  
+static bool obk_softspi_ready = false;  
+static byte sck_idle = 0;                         // 1 when CPOL high (HLW8112)  
+#endif
 #include "../logging/logging.h"
 
 
