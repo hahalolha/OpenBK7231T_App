@@ -23,7 +23,29 @@ uint32_t mode = SPI_MASTER;
 #include "drv_soft_spi.h"  
 static softSPI_t obk_softspi;  
 static bool obk_softspi_ready = false;  
-static byte sck_idle = 0;                         // 1 when CPOL high (HLW8112)  
+static byte sck_idle = 0;                         // 1 when CPOL high (HLW8112)
+
+static void SoftSPI_WriteByte(softSPI_t *s, byte b) {  
+	for (int i = 0; i < 8; i++) {  
+		HAL_PIN_SetOutputValue(s->mosi, (b >> (7 - i)) & 1);  
+		HAL_PIN_SetOutputValue(s->sck, !sck_idle); // active edge  
+		HAL_PIN_SetOutputValue(s->sck, sck_idle);  // back to idle  
+	}  
+}  
+static byte SoftSPI_ReadByte(softSPI_t *s) {  
+	byte r = 0;  
+	for (int i = 0; i < 8; i++) {  
+		HAL_PIN_SetOutputValue(s->sck, !sck_idle); // HLW8112 shifts out on this edge  
+		r |= HAL_PIN_ReadDigitalInput(s->miso) << (7 - i);  
+		HAL_PIN_SetOutputValue(s->sck, sck_idle);  
+	}  
+	return r;  
+}  
+static int SoftSPI_PinIdx(PinName p) {  
+	for (int i = 0; i < PLATFORM_GPIO_MAX; i++)  
+		if (g_pins[i].pin == p) return i;  
+	return -1;  
+}
 #endif
 #include "../logging/logging.h"
 
@@ -46,6 +68,8 @@ int SPI_DriverInit(void) {
 	return 0;
 #elif PLATFORM_BEKEN_NEW
 	return 0;
+#elif PLATFORM_REALTEK
+	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_DriverInit not supported");
     return -1;
@@ -60,6 +84,8 @@ int SPI_DriverDeinit(void) {
 	// spi_exit();
 	return 0;
 #elif PLATFORM_BEKEN_NEW
+	return 0;
+#elif PLATFORM_REALTEK
 	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_DriverDeinit not supported");
@@ -124,6 +150,22 @@ int OBK_SPI_Init(const spi_config_t *config) {
 		return bk_spi_master_init(config->baud_rate, ((config->polarity == SPI_POLARITY_LOW ? 0 : SPI_CPOL) | (config->phase == SPI_PHASE_1ST_EDGE ? 0 : SPI_CPHA)));
 	else
 		return bk_spi_slave_init(config->baud_rate, ((config->polarity == SPI_POLARITY_LOW ? 0 : SPI_CPOL) | (config->phase == SPI_PHASE_1ST_EDGE ? 0 : SPI_CPHA)));
+#elif PLATFORM_REALTEK
+	
+	obk_softspi_ready = false;  
+	obk_softspi.sck  = SoftSPI_PinIdx(PA_3);   // SCK  = PA03  
+	obk_softspi.mosi = SoftSPI_PinIdx(PA_4);   // SDI  = PA04  
+	obk_softspi.miso = SoftSPI_PinIdx(PA_2);   // SDO  = PA02  
+	obk_softspi.ss   = SoftSPI_PinIdx(PA_7);   // unused, CS is bit-banged by the driver  
+	if (obk_softspi.sck < 0 || obk_softspi.mosi < 0 || obk_softspi.miso < 0)  
+		return -1;  
+	sck_idle = (config->polarity == SPI_POLARITY_HIGH) ? 1 : 0;  
+	HAL_PIN_Setup_Output(obk_softspi.sck);  
+	HAL_PIN_Setup_Output(obk_softspi.mosi);  
+	HAL_PIN_Setup_Input(obk_softspi.miso);  
+	HAL_PIN_SetOutputValue(obk_softspi.sck, sck_idle); // park clock at idle level  
+	obk_softspi_ready = true;  
+	return 0;  
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_Init not supported");
     return -1;
@@ -151,6 +193,9 @@ int SPI_Deinit(void) {
 		return bk_spi_master_deinit();
 	else
 		return bk_spi_slave_deinit();
+#elif PLATFORM_REALTEK
+	obk_softspi_ready = false;
+	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_Deinit not supported");
     return -1;
@@ -205,6 +250,11 @@ int SPI_WriteBytes(const void *data, uint32_t size) {
 		return bk_spi_master_xfer(&msg);
 	else
 		return bk_spi_slave_xfer(&msg);
+#elif PLATFORM_REALTEK
+	if (!obk_softspi_ready) return -1;  
+	const uint8_t *p = data;  
+	for (uint32_t i = 0; i < size; i++) SoftSPI_WriteByte(&obk_softspi, p[i]);  
+	return 0;  
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_WriteBytes not supported");
     return -1;
@@ -246,6 +296,11 @@ int SPI_ReadBytes(void *data, uint32_t size) {
 		return bk_spi_master_xfer(&msg);
 	else
 		return bk_spi_slave_xfer(&msg);
+#elif PLATFORM_REALTEK
+	if (!obk_softspi_ready) return -1;  
+	uint8_t *p = data;  
+	for (uint32_t i = 0; i < size; i++) p[i] = SoftSPI_ReadByte(&obk_softspi);  
+	return 0;  
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_ReadBytes not supported");
     return -1;
@@ -276,6 +331,16 @@ int SPI_Transmit(const void *txData, uint32_t txSize, void *rxData,
 		return bk_spi_master_xfer(&msg);
 	else
 		return bk_spi_slave_xfer(&msg);
+#elif PLATFORM_REALTEK
+	int err = 0;  
+		
+	if (txSize && txData) 
+		err |= SPI_WriteBytes(txData, txSize);  
+		
+	if (rxSize && rxData) 
+		err |= SPI_ReadBytes(rxData, rxSize);  
+		
+	return err;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_Transmit not supported");
     return -1;
