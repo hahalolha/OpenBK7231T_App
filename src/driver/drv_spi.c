@@ -22,7 +22,7 @@ uint32_t mode = SPI_MASTER;
 #include "../hal/hal_pins.h"  
 #include "drv_soft_spi.h"  
   
-#define SOFTSPI_DELAY  /* try: usleep(2); if still failing */  
+#define SOFTSPI_DELAY usleep(2);  /* try: usleep(2); if still failing */  
   
 static softSPI_t obk_softspi;  
 static bool obk_softspi_ready = false;  
