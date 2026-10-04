@@ -18,38 +18,48 @@
 uint32_t mode = SPI_MASTER;
 #endif
 #if PLATFORM_REALTEK  
-#include "../hal/realtek/hal_pinmap_realtek.h"   // for g_pins / PinName  
+#include "../hal/realtek/hal_pinmap_realtek.h"  
 #include "../hal/hal_pins.h"  
-#include "drv_soft_spi.h"
-#define SOFTSPI_DELAY
+#include "drv_soft_spi.h"  
+  
+#define SOFTSPI_DELAY  /* try: usleep(2); if still failing */  
+  
 static softSPI_t obk_softspi;  
 static bool obk_softspi_ready = false;  
-static byte sck_idle = 1;                         // 1 when CPOL high (HLW8112)
-
+static byte sck_idle = 1;   /* CPOL=1; flip to 0 to test mode 0 */  
+static byte sck_act  = 0;   /* active level = !idle */  
+  
 static int SoftSPI_PinIdx(PinName p) {  
-	for (int i = 0; i < PLATFORM_GPIO_MAX; i++)  
+	for (int i = 0; i < g_numPins; i++)  
 		if (g_pins[i].pin == p) return i;  
 	return -1;  
-}
-
+}  
+  
+/* WRITE: data valid while SCK high; chip latches on falling edge.  
+   So: raise SCK -> set MOSI -> drop SCK. */  
 static void SoftSPI_WriteByte(softSPI_t *s, byte b) {  
 	for (int i = 0; i < 8; i++) {  
-		HAL_PIN_SetOutputValue(s->sck, !sck_idle); // rising edge
-		SOFTSPI_DELAY;
-		HAL_PIN_SetOutputValue(s->mosi, (b >> (7 - i)) & 1);
-		SOFTSPI_DELAY;
-		HAL_PIN_SetOutputValue(s->sck, sck_idle);  // back to idle
-		SOFTSPI_DELAY;
+		HAL_PIN_SetOutputValue(s->sck, sck_act);   /* rising edge */  
+		SOFTSPI_DELAY;  
+		HAL_PIN_SetOutputValue(s->mosi, (b >> (7 - i)) & 1); /* change SDI on rising edge */  
+		SOFTSPI_DELAY;  
+		HAL_PIN_SetOutputValue(s->sck, sck_idle);  /* falling edge: chip samples */  
+		SOFTSPI_DELAY;  
 	}  
 }  
+  
+/* READ: chip changes SDO on rising edge, data stable at falling edge.  
+   So: raise SCK -> drop SCK -> sample MISO. */  
 static byte SoftSPI_ReadByte(softSPI_t *s) {  
 	byte r = 0;  
 	for (int i = 0; i < 8; i++) {  
-		HAL_PIN_SetOutputValue(s->sck, !sck_idle); // HLW8112 shifts out on this edge
-		SOFTSPI_DELAY;
-		HAL_PIN_SetOutputValue(s->sck, sck_idle); 
-		SOFTSPI_DELAY;
-		r |= HAL_PIN_ReadDigitalInput(s->miso) << (7 - i);   
+		HAL_PIN_SetOutputValue(s->sck, sck_act);   /* rising edge: chip shifts new bit */  
+		SOFTSPI_DELAY;  
+		HAL_PIN_SetOutputValue(s->sck, sck_idle);  /* falling edge */  
+		SOFTSPI_DELAY;  
+		int b = HAL_PIN_ReadDigitalInput(s->miso); /* sample */  
+		r |= (b << (7 - i));  
+		ADDLOG_DEBUG(LOG_FEATURE_DRV, "softspi bit%d miso=%d", i, b); /* temp debug */  
 	}  
 	return r;  
 }  
@@ -157,20 +167,21 @@ int OBK_SPI_Init(const spi_config_t *config) {
 		return bk_spi_master_init(config->baud_rate, ((config->polarity == SPI_POLARITY_LOW ? 0 : SPI_CPOL) | (config->phase == SPI_PHASE_1ST_EDGE ? 0 : SPI_CPHA)));
 	else
 		return bk_spi_slave_init(config->baud_rate, ((config->polarity == SPI_POLARITY_LOW ? 0 : SPI_CPOL) | (config->phase == SPI_PHASE_1ST_EDGE ? 0 : SPI_CPHA)));
-#elif PLATFORM_REALTEK
-	
-	obk_softspi_ready = false;  
-	obk_softspi.sck  = SoftSPI_PinIdx(PA_4);   // SCK  = PA04  
-	obk_softspi.mosi = SoftSPI_PinIdx(PA_3);   // SDI  = PA03  
-	obk_softspi.miso = SoftSPI_PinIdx(PA_2);   // SDO  = PA02  
-	obk_softspi.ss   = SoftSPI_PinIdx(PA_7);   // unused, CS is bit-banged by the driver  
+#elif PLATFORM_REALTEK  
+	sck_idle = (config->polarity == SPI_POLARITY_HIGH) ? 1 : 0;  
+	sck_act  = !sck_idle;  
+	obk_softspi.miso = SoftSPI_PinIdx(PA_2);  
+	obk_softspi.mosi = SoftSPI_PinIdx(PA_3);  
+	obk_softspi.sck  = SoftSPI_PinIdx(PA_4);  
+	ADDLOG_INFO(LOG_FEATURE_DRV, "softspi sck=%d mosi=%d miso=%d idle=%d",  
+		obk_softspi.sck, obk_softspi.mosi, obk_softspi.miso, sck_idle);  
 	if (obk_softspi.sck < 0 || obk_softspi.mosi < 0 || obk_softspi.miso < 0)  
 		return -1;  
-	sck_idle = (config->polarity == SPI_POLARITY_HIGH) ? 1 : 0;  
 	HAL_PIN_Setup_Output(obk_softspi.sck);  
 	HAL_PIN_Setup_Output(obk_softspi.mosi);  
 	HAL_PIN_Setup_Input(obk_softspi.miso);  
-	HAL_PIN_SetOutputValue(obk_softspi.sck, sck_idle); // park clock at idle level  
+	HAL_PIN_SetOutputValue(obk_softspi.sck, sck_idle);   /* SCK rests HIGH — before any CS */  
+	HAL_PIN_SetOutputValue(obk_softspi.mosi, 1);  
 	obk_softspi_ready = true;  
 	return 0;  
 #else
@@ -257,10 +268,11 @@ int SPI_WriteBytes(const void *data, uint32_t size) {
 		return bk_spi_master_xfer(&msg);
 	else
 		return bk_spi_slave_xfer(&msg);
-#elif PLATFORM_REALTEK
+#elif PLATFORM_REALTEK  
 	if (!obk_softspi_ready) return -1;  
-	const uint8_t *p = data;  
-	for (uint32_t i = 0; i < size; i++) SoftSPI_WriteByte(&obk_softspi, p[i]);  
+	const uint8_t *p = (const uint8_t *)data;  
+	for (uint32_t i = 0; i < size; i++)  
+		SoftSPI_WriteByte(&obk_softspi, p[i]);  
 	return 0;  
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_WriteBytes not supported");
@@ -303,11 +315,13 @@ int SPI_ReadBytes(void *data, uint32_t size) {
 		return bk_spi_master_xfer(&msg);
 	else
 		return bk_spi_slave_xfer(&msg);
-#elif PLATFORM_REALTEK
-	if (!obk_softspi_ready) return -1;  
-	uint8_t *p = data;  
-	for (uint32_t i = 0; i < size; i++) p[i] = SoftSPI_ReadByte(&obk_softspi);  
-	return 0;  
+#elif PLATFORM_REALTEK  
+	if (!obk_softspi_ready || data == NULL || size == 0)  
+		return -1;  
+	uint8_t *p = (uint8_t *)data;  
+	for (uint32_t i = 0; i < size; i++)  
+		p[i] = SoftSPI_ReadByte(&obk_softspi);  
+	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_ReadBytes not supported");
     return -1;
@@ -338,16 +352,15 @@ int SPI_Transmit(const void *txData, uint32_t txSize, void *rxData,
 		return bk_spi_master_xfer(&msg);
 	else
 		return bk_spi_slave_xfer(&msg);
-#elif PLATFORM_REALTEK
-	int err = 0;  
-		
-	if (txSize && txData) 
-		err |= SPI_WriteBytes(txData, txSize);  
-		
-	if (rxSize && rxData) 
-		err |= SPI_ReadBytes(rxData, rxSize);  
-		
-	return err;
+#elif PLATFORM_REALTEK  
+	if (!obk_softspi_ready) return -1;  
+	if (txSize && txData) {  
+		int e = SPI_WriteBytes(txData, txSize);  
+		if (e) return e;  
+	}  
+	if (rxSize && rxData)  
+		return SPI_ReadBytes(rxData, rxSize);  
+	return 0;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_Transmit not supported");
     return -1;
