@@ -55,12 +55,14 @@ static void SoftSPI_WriteByte(softSPI_t *s, byte b) {
 static byte SoftSPI_ReadByte(softSPI_t *s) {  
 	byte r = 0;  
 	for (int i = 0; i < 8; i++) {  
-		HAL_PIN_SetOutputValue(s->sck, sck_idle);  /* rising edge: chip shifts next bit */  
+		HAL_PIN_SetOutputValue(s->sck, sck_act);   /* falling edge: chip presents bit */  
 		SOFTSPI_DELAY;  
-		HAL_PIN_SetOutputValue(s->sck, sck_act);   /* falling edge: data now stable */  
-		SOFTSPI_DELAY;  
-		int b = HAL_PIN_ReadDigitalInput(s->miso); /* sample late */  
+		int b = HAL_PIN_ReadDigitalInput(s->miso); /* sample while SCK low */  
 		r |= (b << (7 - i));  
+		//ADDLOG_DEBUG(LOG_FEATURE_DRV, "softspi bit%d miso=%d", i, b);  
+		SOFTSPI_DELAY;  
+		HAL_PIN_SetOutputValue(s->sck, sck_idle);  /* return to idle high */  
+		SOFTSPI_DELAY;  
 	}  
 	return r;  
 }
