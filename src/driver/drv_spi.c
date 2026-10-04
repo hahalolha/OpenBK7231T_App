@@ -39,14 +39,16 @@ static int SoftSPI_PinIdx(PinName p) {
    So: raise SCK -> set MOSI -> drop SCK. */  
 static void SoftSPI_WriteByte(softSPI_t *s, byte b) {  
 	for (int i = 0; i < 8; i++) {  
-		HAL_PIN_SetOutputValue(s->sck, sck_act);   /* rising edge */  
+		byte bit = (b >> (7 - i)) & 1;  
+		HAL_PIN_SetOutputValue(s->mosi, bit);        /* change SDI while SCK high */  
+		ADDLOG_DEBUG(LOG_FEATURE_DRV, "softspi write bit%d mosi=%d", i, bit);  
 		SOFTSPI_DELAY;  
-		HAL_PIN_SetOutputValue(s->mosi, (b >> (7 - i)) & 1); /* change SDI on rising edge */  
+		HAL_PIN_SetOutputValue(s->sck, sck_act);     /* falling edge: chip samples SDI */  
 		SOFTSPI_DELAY;  
-		HAL_PIN_SetOutputValue(s->sck, sck_idle);  /* falling edge: chip samples */  
+		HAL_PIN_SetOutputValue(s->sck, sck_idle);    /* rising edge: ready for next bit */  
 		SOFTSPI_DELAY;  
 	}  
-}  
+}
   
 /* READ: chip changes SDO on rising edge, data stable at falling edge.  
    So: raise SCK -> drop SCK -> sample MISO. */  
