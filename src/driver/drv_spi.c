@@ -20,32 +20,39 @@ uint32_t mode = SPI_MASTER;
 #if PLATFORM_REALTEK  
 #include "../hal/realtek/hal_pinmap_realtek.h"   // for g_pins / PinName  
 #include "../hal/hal_pins.h"  
-#include "drv_soft_spi.h"  
+#include "drv_soft_spi.h"
+#define SOFTSPI_DELAY
 static softSPI_t obk_softspi;  
 static bool obk_softspi_ready = false;  
-static byte sck_idle = 0;                         // 1 when CPOL high (HLW8112)
+static byte sck_idle = 1;                         // 1 when CPOL high (HLW8112)
 
-static void SoftSPI_WriteByte(softSPI_t *s, byte b) {  
-	for (int i = 0; i < 8; i++) {  
-		HAL_PIN_SetOutputValue(s->mosi, (b >> (7 - i)) & 1);  
-		HAL_PIN_SetOutputValue(s->sck, !sck_idle); // active edge  
-		HAL_PIN_SetOutputValue(s->sck, sck_idle);  // back to idle  
-	}  
-}  
-static byte SoftSPI_ReadByte(softSPI_t *s) {  
-	byte r = 0;  
-	for (int i = 0; i < 8; i++) {  
-		HAL_PIN_SetOutputValue(s->sck, !sck_idle); // HLW8112 shifts out on this edge  
-		r |= HAL_PIN_ReadDigitalInput(s->miso) << (7 - i);  
-		HAL_PIN_SetOutputValue(s->sck, sck_idle);  
-	}  
-	return r;  
-}  
 static int SoftSPI_PinIdx(PinName p) {  
 	for (int i = 0; i < PLATFORM_GPIO_MAX; i++)  
 		if (g_pins[i].pin == p) return i;  
 	return -1;  
 }
+
+static void SoftSPI_WriteByte(softSPI_t *s, byte b) {  
+	for (int i = 0; i < 8; i++) {  
+		HAL_PIN_SetOutputValue(s->sck, !sck_idle); // rising edge
+		SOFTSPI_DELAY;
+		HAL_PIN_SetOutputValue(s->mosi, (b >> (7 - i)) & 1);
+		SOFTSPI_DELAY;
+		HAL_PIN_SetOutputValue(s->sck, sck_idle);  // back to idle
+		SOFTSPI_DELAY;
+	}  
+}  
+static byte SoftSPI_ReadByte(softSPI_t *s) {  
+	byte r = 0;  
+	for (int i = 0; i < 8; i++) {  
+		HAL_PIN_SetOutputValue(s->sck, !sck_idle); // HLW8112 shifts out on this edge
+		SOFTSPI_DELAY;
+		HAL_PIN_SetOutputValue(s->sck, sck_idle); 
+		SOFTSPI_DELAY;
+		r |= HAL_PIN_ReadDigitalInput(s->miso) << (7 - i);   
+	}  
+	return r;  
+}  
 #endif
 #include "../logging/logging.h"
 
@@ -153,8 +160,8 @@ int OBK_SPI_Init(const spi_config_t *config) {
 #elif PLATFORM_REALTEK
 	
 	obk_softspi_ready = false;  
-	obk_softspi.sck  = SoftSPI_PinIdx(PA_3);   // SCK  = PA03  
-	obk_softspi.mosi = SoftSPI_PinIdx(PA_4);   // SDI  = PA04  
+	obk_softspi.sck  = SoftSPI_PinIdx(PA_4);   // SCK  = PA04  
+	obk_softspi.mosi = SoftSPI_PinIdx(PA_3);   // SDI  = PA03  
 	obk_softspi.miso = SoftSPI_PinIdx(PA_2);   // SDO  = PA02  
 	obk_softspi.ss   = SoftSPI_PinIdx(PA_7);   // unused, CS is bit-banged by the driver  
 	if (obk_softspi.sck < 0 || obk_softspi.mosi < 0 || obk_softspi.miso < 0)  
