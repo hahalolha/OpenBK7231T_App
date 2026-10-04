@@ -41,7 +41,7 @@ static void SoftSPI_WriteByte(softSPI_t *s, byte b) {
 	for (int i = 0; i < 8; i++) {  
 		byte bit = (b >> (7 - i)) & 1;  
 		HAL_PIN_SetOutputValue(s->mosi, bit);        /* change SDI while SCK high */  
-		ADDLOG_DEBUG(LOG_FEATURE_DRV, "softspi write bit%d mosi=%d", i, bit);  
+		//ADDLOG_DEBUG(LOG_FEATURE_DRV, "softspi write bit%d mosi=%d", i, bit);  
 		SOFTSPI_DELAY;  
 		HAL_PIN_SetOutputValue(s->sck, sck_act);     /* falling edge: chip samples SDI */  
 		SOFTSPI_DELAY;  
@@ -55,16 +55,15 @@ static void SoftSPI_WriteByte(softSPI_t *s, byte b) {
 static byte SoftSPI_ReadByte(softSPI_t *s) {  
 	byte r = 0;  
 	for (int i = 0; i < 8; i++) {  
-		HAL_PIN_SetOutputValue(s->sck, sck_act);   /* rising edge: chip shifts new bit */  
+		HAL_PIN_SetOutputValue(s->sck, sck_idle);  /* rising edge: chip shifts next bit */  
 		SOFTSPI_DELAY;  
-		HAL_PIN_SetOutputValue(s->sck, sck_idle);  /* falling edge */  
+		HAL_PIN_SetOutputValue(s->sck, sck_act);   /* falling edge: data now stable */  
 		SOFTSPI_DELAY;  
-		int b = HAL_PIN_ReadDigitalInput(s->miso); /* sample */  
+		int b = HAL_PIN_ReadDigitalInput(s->miso); /* sample late */  
 		r |= (b << (7 - i));  
-		ADDLOG_DEBUG(LOG_FEATURE_DRV, "softspi bit%d miso=%d", i, b); /* temp debug */  
 	}  
 	return r;  
-}  
+}
 #endif
 #include "../logging/logging.h"
 
