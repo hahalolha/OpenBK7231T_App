@@ -22,7 +22,7 @@ uint32_t mode = SPI_MASTER;
 #include "../hal/hal_pins.h"  
 #include "drv_soft_spi.h"  
   
-#define SOFTSPI_DELAY usleep(2);  /* try: usleep(2); if still failing */  
+#define SOFTSPI_DELAY HAL_Delay_us(2)  
   
 static softSPI_t obk_softspi;  
 static bool obk_softspi_ready = false;  
@@ -357,13 +357,14 @@ int SPI_Transmit(const void *txData, uint32_t txSize, void *rxData,
 		return bk_spi_slave_xfer(&msg);
 #elif PLATFORM_REALTEK  
 	if (!obk_softspi_ready) return -1;  
-	if (txSize && txData) {  
-		int e = SPI_WriteBytes(txData, txSize);  
-		if (e) return e;  
-	}  
-	if (rxSize && rxData)  
-		return SPI_ReadBytes(rxData, rxSize);  
-	return 0;
+	taskENTER_CRITICAL();           /* or portDISABLE_INTERRUPTS(), per Ameba SDK */  
+	int e = 0;  
+	if (txSize && txData)  
+		e = SPI_WriteBytes(txData, txSize);  
+	if (!e && rxSize && rxData)  
+		e = SPI_ReadBytes(rxData, rxSize);  
+	taskEXIT_CRITICAL();  
+	return e;
 #else
     ADDLOG_ERROR(LOG_FEATURE_DRV, "SPI_Transmit not supported");
     return -1;
